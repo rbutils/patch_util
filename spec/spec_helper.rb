@@ -213,6 +213,19 @@ module PatchUtil
       $stdout = original_stdout
     end
 
+    def with_env(overrides)
+      previous = {}
+      overrides.each do |key, value|
+        previous[key] = ENV.key?(key) ? ENV[key] : :__patch_util_env_missing__
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+      yield
+    ensure
+      previous.each do |key, value|
+        value == :__patch_util_env_missing__ ? ENV.delete(key) : ENV[key] = value
+      end
+    end
+
     def create_git_repo_with_patch(patch_text = SAMPLE_PATCH)
       Dir.mktmpdir do |dir|
         run_git(dir, %w[init])

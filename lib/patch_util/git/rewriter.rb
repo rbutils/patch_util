@@ -74,7 +74,7 @@ module PatchUtil
 
           until pending_revisions.empty?
             revision = pending_revisions.first
-            @git_cli.cherry_pick(worktree, revision)
+            @git_cli.cherry_pick(worktree, revision, env: replay_commit_env(repo_path, revision))
             pending_revisions.shift
           end
 
@@ -208,6 +208,15 @@ module PatchUtil
           'GIT_AUTHOR_NAME' => original_commit.author_name,
           'GIT_AUTHOR_EMAIL' => original_commit.author_email,
           'GIT_AUTHOR_DATE' => original_commit.author_date,
+          'GIT_COMMITTER_NAME' => original_commit.committer_name,
+          'GIT_COMMITTER_EMAIL' => original_commit.committer_email,
+          'GIT_COMMITTER_DATE' => original_commit.committer_date
+        }
+      end
+
+      def replay_commit_env(repo_path, revision)
+        original_commit = @git_cli.show_commit_metadata(repo_path, revision)
+        {
           'GIT_COMMITTER_NAME' => original_commit.committer_name,
           'GIT_COMMITTER_EMAIL' => original_commit.committer_email,
           'GIT_COMMITTER_DATE' => original_commit.committer_date

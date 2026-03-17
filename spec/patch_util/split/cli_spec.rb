@@ -372,6 +372,48 @@ RSpec.describe PatchUtil::CLI do
     end
   end
 
+  it 'rewrites earlier commits even when no git identity is configured in the process environment' do
+    create_linear_git_repo_for_rewrite_with_metadata do |repo_dir, shas|
+      with_env(
+        'GIT_AUTHOR_NAME' => nil,
+        'GIT_AUTHOR_EMAIL' => nil,
+        'GIT_AUTHOR_DATE' => nil,
+        'GIT_COMMITTER_NAME' => nil,
+        'GIT_COMMITTER_EMAIL' => nil,
+        'GIT_COMMITTER_DATE' => nil,
+        'EMAIL' => nil
+      ) do
+        capture_stdout do
+          described_class.start([
+                                  'split', 'plan',
+                                  '--repo', repo_dir,
+                                  '--commit', shas[:change],
+                                  'remove old', 'a1',
+                                  'add new', 'a2'
+                                ])
+        end
+
+        capture_stdout do
+          described_class.start([
+                                  'split', 'apply',
+                                  '--repo', repo_dir,
+                                  '--commit', shas[:change],
+                                  '--rewrite'
+                                ])
+        end
+      end
+
+      author = run_git(repo_dir, ['show', '-s', '--format=%an <%ae>', 'HEAD~1']).strip
+      committer = run_git(repo_dir, ['show', '-s', '--format=%cn <%ce>', 'HEAD~1']).strip
+      body = run_git(repo_dir, %w[show -s --format=%b HEAD~1])
+
+      author.should
+      committer.should
+      body.should include("Split-from: #{shas[:change]}")
+      body.should include('Original-subject: change')
+    end
+  end
+
   it 'rejects rewrite apply when the git worktree is dirty' do
     create_linear_git_repo_for_rewrite do |repo_dir, shas|
       capture_stdout do

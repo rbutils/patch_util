@@ -57,7 +57,7 @@ module PatchUtil
           if @git_cli.cherry_pick_in_progress?(worktree)
             current_revision = @git_cli.cherry_pick_head(worktree)
             pending_revisions = normalize_pending_revisions(repo_path, state, current_revision, pending_revisions)
-            @git_cli.cherry_pick_continue(worktree)
+            @git_cli.cherry_pick_continue(worktree, env: replay_commit_env(repo_path, current_revision))
             pending_revisions.shift if pending_revisions.first == current_revision
           elsif !@git_cli.worktree_clean?(worktree)
             raise PatchUtil::ValidationError,
@@ -66,7 +66,7 @@ module PatchUtil
 
           until pending_revisions.empty?
             revision = pending_revisions.first
-            @git_cli.cherry_pick(worktree, revision)
+            @git_cli.cherry_pick(worktree, revision, env: replay_commit_env(repo_path, revision))
             pending_revisions.shift
           end
 
@@ -464,6 +464,15 @@ module PatchUtil
         return pending_revisions if pending_revisions.first == current_revision
 
         [current_revision, *@git_cli.rev_list(repo_path, "#{current_revision}..#{state.head_sha}")]
+      end
+
+      def replay_commit_env(repo_path, revision)
+        original_commit = @git_cli.show_commit_metadata(repo_path, revision)
+        {
+          'GIT_COMMITTER_NAME' => original_commit.committer_name,
+          'GIT_COMMITTER_EMAIL' => original_commit.committer_email,
+          'GIT_COMMITTER_DATE' => original_commit.committer_date
+        }
       end
 
       def finalize_rewrite(repo_path, branch, old_head, backup_ref, worktree, state_store)
