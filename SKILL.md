@@ -19,9 +19,15 @@ Use this skill when you need to break one large git commit or diff into smaller 
 
 Default to the `split` subsystem:
 
-1. `split inspect` on the git commit you want to split
-2. `split plan` against that same git-backed source
-3. `split apply --rewrite` when the split should become real replacement commits
+1. `split inspect` on the git commit you want to split; add `--compact` first for large or noisy commits
+2. use targeted `--expand` on interesting hunks, then build a `split plan` against that same source
+3. when partial selectors are involved, prefer `split apply --output-dir ...` first and read the emitted patch text before rewriting history
+4. use `split apply --rewrite` only after the emitted patches look structurally correct and the split should become real replacement commits
+
+For git rewrite workflows, surface these limits early:
+
+- merge commits are not supported as split targets
+- descendant replay ranges containing merge commits are rejected up front
 
 Source selectors are contextual:
 
@@ -93,11 +99,32 @@ patch_util split apply --patch sample.diff --plan sample.plan.json --output-dir 
 - whole hunks use labels like `a`, `b`, `c`
 - whole-hunk ranges use labels like `a-c` or `z-ab`
 - changed lines use labels like `a1`, `a2`, `b1`
+- changed-line labels enumerate displayed changed rows in hunk order, including both removed (`-`) and added (`+`) rows
 - ranges must stay inside one hunk, for example `a1-a4`
 - do not mix whole-hunk and partial selection for the same hunk in one plan
 - if anything is intentionally left unassigned, add a leftovers chunk name as the final positional argument to `split plan`
 
+**Warning:** partial line selectors are text-row selectors, not AST-aware or syntax-aware edits. Selecting only the "new logical lines" from a replacement does not automatically remove the old ones.
+
+For replacement hunks, especially in block-structured code, prefer selecting the full paired old+new replacement span. If a hunk touches block delimiters, method headers, `let` / `it` declarations, or moved setup code, selecting only added rows can leave duplicate lines behind and break syntax.
+
 If no leftovers chunk is declared, PatchUtil fails instead of silently removing unassigned changes. That fail-closed behavior is deliberate: implicit omission would otherwise drop those changes from the output. If removal is actually intended, PatchUtil currently expects a more explicit re-plan rather than treating missing leftovers as permission to delete.
+
+## Mixed Replacement Example
+
+Suppose compact inspect shows one Ruby replacement hunk where an example declaration changes:
+
+```diff
+-it 'uses old setup' do
++let(:user) { build(:user) }
++it 'uses new setup' do
+   run_example
+ end
+```
+
+The unsafe plan is to select only the added rows, such as `a2-a3`. That keeps the old `it ... do` line and adds the new `let` / `it` lines, which can leave duplicated declarations or broken block structure.
+
+The safe plan is to select the full replacement span that covers both the removed and added rows, for example `a1-a3`, then emit patch files first and read the resulting patch text before any `--rewrite` step.
 
 ## Agent Guidance
 
@@ -105,10 +132,24 @@ If no leftovers chunk is declared, PatchUtil fails instead of silently removing 
 - use `--compact` for large or noisy commits
 - use `--expand` only after compact inspect has identified the interesting hunks
 - keep `--expand` inputs at whole-hunk labels or hunk ranges only; changed-line selectors belong to `split plan`, not to compact drill-down
+- think in syntactic units, not only semantic intent; for mixed replacements, select the full replacement span when structure matters
+- treat `split apply --output-dir` plus emitted-patch review as the safe default before `--rewrite` when partial selectors are involved
+- use `patch_util` to isolate cosmetic-only hunks or replacement spans into their own chunk so they can be reviewed, kept separate, or intentionally dropped after inspection
 - propose chunk names based on reviewable intent, not file count alone
 - preserve rename/mode/file-operation intent as first-class patch units when present
 - prefer `split` language in explanations; mention `rewrite` only when recovery or history replay becomes relevant
 - surface `rewrite` commands only after `split apply --rewrite` has started or failed
+
+## Cosmetic Changes
+
+When the goal is to remove cosmetic churn from a commit, `patch_util` helps by turning style-only hunks or replacement spans into explicit chunks:
+
+1. inspect the commit and identify cosmetic-only hunks or mixed hunks with cosmetic replacement spans
+2. plan cosmetic chunks separately from functional chunks
+3. emit patch files first and read them to confirm the cosmetic chunk is actually cosmetic
+4. keep that chunk as a separate reviewable commit, or omit/re-plan it intentionally if the cosmetic change should not survive
+
+This is usually safer than manually editing a large original diff because the split stays explicit and reviewable.
 
 ## Rewrite Notes
 
@@ -120,11 +161,6 @@ If `split apply --rewrite` hits trouble, the retained rewrite commands are avail
 - `rewrite restore`
 
 These are support tools for difficult rewrite cases, not the main planning interface.
-
-Rewrite guardrails still apply:
-
-- merge commits are not supported as split targets
-- descendant replay ranges containing merge commits are rejected up front
 
 ## After The Split
 
