@@ -738,4 +738,36 @@ RSpec.describe PatchUtil::CLI do
       backup_refs.should == []
     end
   end
+
+  it 'fails rewrite before backup refs are created when preflight verification fails' do
+    create_linear_git_repo_for_rewrite do |repo_dir, shas|
+      capture_stdout do
+        described_class.start([
+                                'split', 'plan',
+                                '--repo', repo_dir,
+                                '--commit', shas[:change],
+                                'remove old', 'a1',
+                                'add new', 'a2'
+                              ])
+      end
+
+      run_git(repo_dir, %w[rev-parse HEAD]).strip
+      allow_any_instance_of(PatchUtil::Git::RewritePreflightVerifier)
+        .to receive(:verify)
+        .and_raise(PatchUtil::ValidationError, 'preflight exploded')
+
+      proc do
+        described_class.start([
+                                'split', 'apply',
+                                '--repo', repo_dir,
+                                '--commit', shas[:change],
+                                '--rewrite'
+                              ])
+      end.should raise_error(PatchUtil::ValidationError, /preflight exploded/)
+
+      run_git(repo_dir, %w[rev-parse HEAD]).strip.should
+      backup_refs = run_git(repo_dir, %w[for-each-ref --format=%(refname) refs/patch_util-backups]).lines(chomp: true)
+      backup_refs.should == []
+    end
+  end
 end

@@ -20,11 +20,16 @@ module PatchUtil
       Status = RewriteSessionManager::Status
 
       def initialize(git_cli: Cli.new, applier: PatchUtil::Split::Applier.new, clock: -> { Time.now.utc },
-                     session_manager: nil)
+                     session_manager: nil, preflight_verifier: nil)
         @git_cli = git_cli
         @applier = applier
         @clock = clock
         @session_manager = session_manager || RewriteSessionManager.new(git_cli: git_cli, clock: clock)
+        @preflight_verifier = preflight_verifier || RewritePreflightVerifier.new(
+          git_cli: git_cli,
+          applier: applier,
+          clock: clock
+        )
       end
 
       def rewrite(source:, diff:, plan_entry:)
@@ -52,22 +57,26 @@ module PatchUtil
           raise PatchUtil::ValidationError,
                 "git rewrite apply does not support descendant merge commits yet: #{merge_descendant} is a merge commit in #{target}..#{head}"
         end
+
+        emitted = @preflight_verifier.verify(
+          source: source,
+          parent: parent,
+          diff: diff,
+          plan_entry: plan_entry,
+          branch: branch
+        )
+
         original_commit = @git_cli.show_commit_metadata(repo_path, target)
         backup_ref = "refs/patch_util-backups/#{branch}/#{timestamp_token}"
         @git_cli.update_ref(repo_path, backup_ref, head)
         worktree = build_worktree_path(repo_path, branch, target)
-        emitted_output_dir = File.join(worktree, '.patch_util_emitted')
         state_store = RewriteStateStore.new(git_dir: @git_cli.git_dir(repo_path))
         pending_revisions = descendants.dup
 
         begin
           @git_cli.worktree_add(repo_path, worktree, parent)
-
-          emitted = @applier.apply(diff: diff, plan_entry: plan_entry,
-                                   output_dir: emitted_output_dir)
           emitted.each do |item|
             @git_cli.apply_patch_text(worktree, item[:patch_text])
-            FileUtils.rm_rf(emitted_output_dir)
             @git_cli.commit_all(worktree, build_commit_message(item[:name], target, original_commit),
                                 env: split_commit_env(original_commit))
           end

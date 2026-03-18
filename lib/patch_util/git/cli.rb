@@ -111,6 +111,14 @@ module PatchUtil
         stdout
       end
 
+      def check_patch_text(path, patch_text)
+        stdout, stderr, status = Open3.capture3('git', '-C', File.expand_path(path), 'apply', '--check',
+                                                '--whitespace=nowarn', '-', stdin_data: patch_text)
+        raise PatchUtil::Error, "git apply --check failed: #{stderr.strip}" unless status.success?
+
+        stdout
+      end
+
       def commit_all(path, message, env: {})
         add_stdout, add_stderr, add_status = Open3.capture3(env, 'git', '-C', File.expand_path(path), 'add', '-A')
         raise PatchUtil::Error, "git add failed: #{add_stderr.strip}" unless add_status.success?

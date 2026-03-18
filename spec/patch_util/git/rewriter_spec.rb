@@ -76,6 +76,10 @@ RSpec.describe PatchUtil::Git::Rewriter do
       true
     end
 
+    def check_patch_text(_path, _patch_text)
+      true
+    end
+
     def commit_all(_path, _message, env: {})
       @commit_calls << { message: _message, env: env }
       env['GIT_AUTHOR_NAME'].should
@@ -244,6 +248,23 @@ RSpec.describe PatchUtil::Git::Rewriter do
     end
   end
 
+  class FakePreflightVerifier
+    attr_reader :calls
+
+    def initialize(emitted: [{ name: 'chunk one', patch_text: "--- a/x\n+++ b/x\n" }], error: nil)
+      @emitted = emitted
+      @error = error
+      @calls = []
+    end
+
+    def verify(source:, parent:, diff:, plan_entry:, branch:)
+      @calls << { source: source, parent: parent, diff: diff, plan_entry: plan_entry, branch: branch }
+      raise @error if @error
+
+      @emitted
+    end
+  end
+
   it 'preserves recovery information when rewrite replay fails' do
     Dir.mktmpdir do |dir|
       git_dir = File.join(dir, '.git')
@@ -295,6 +316,28 @@ RSpec.describe PatchUtil::Git::Rewriter do
       message.should include('Tested-by: Test Runner <test@example.com>')
       message.should include('Split-from: targetsha')
       message.should include('Original-subject: change')
+    end
+  end
+
+  it 'fails before creating rewrite backup state when preflight verification fails' do
+    Dir.mktmpdir do |dir|
+      git_dir = File.join(dir, '.git')
+      FileUtils.mkdir_p(git_dir)
+      git_cli = FakeGitCli.new(git_dir: git_dir)
+      verifier = FakePreflightVerifier.new(error: PatchUtil::ValidationError.new('preflight boom'))
+      rewriter = described_class.new(git_cli: git_cli, applier: FakeApplier.new, preflight_verifier: verifier)
+      source = FakeSource.new(repo_path: dir, commit_sha: 'targetsha', kind: 'git_commit')
+
+      proc do
+        rewriter.rewrite(source: source, diff: :diff, plan_entry: :plan)
+      end.should raise_error(PatchUtil::ValidationError, /preflight boom/)
+
+      verifier.calls.length.should
+      verifier.calls.first[:parent].should
+      verifier.calls.first[:branch].should
+      git_cli.updated_refs.should
+      git_cli.removed_worktrees.should
+      PatchUtil::Git::RewriteStateStore.new(git_dir: git_dir).find_branch('main').should be_nil
     end
   end
 
