@@ -4,6 +4,30 @@ RSpec.describe PatchUtil::Split::Projector do
   let(:planner) { PatchUtil::Split::Planner.new }
   let(:emitter) { PatchUtil::Split::Emitter.new }
 
+  def emitted_patches_for(patch_text, chunk_requests)
+    diff = parsed_diff(patch_text)
+    source = source_for(patch_text)
+    plan_entry = planner.build(
+      source: source,
+      diff: diff,
+      chunk_requests: chunk_requests.map do |name, selector_text|
+        PatchUtil::Split::ChunkRequest.new(name: name, selector_text: selector_text, leftovers: false)
+      end
+    )
+
+    projector = described_class.new(diff: diff, plan_entry: plan_entry)
+    plan_entry.chunks.each_index.map do |chunk_index|
+      emitter.emit(projector.project_chunk(chunk_index))
+    end
+  end
+
+  def apply_patch_text!(repo_dir, patch_name, patch_text)
+    patch_path = File.join(repo_dir, patch_name)
+    File.write(patch_path, patch_text)
+    stdout, stderr, status = Open3.capture3('git', '-C', repo_dir, 'apply', patch_path)
+    raise "git apply failed for #{patch_name}\n#{stdout}\n#{stderr}" unless status.success?
+  end
+
   it 'emits deletion-only and addition-only patches from one original replacement' do
     diff = parsed_diff
     source = source_for
@@ -70,10 +94,28 @@ RSpec.describe PatchUtil::Split::Projector do
     first_patch.should include('+line one')
     first_patch.should include('+line two')
 
-    second_patch.should include('@@ -0,2 +1,3 @@')
+    second_patch.should include('--- a/new_file.rb')
+    second_patch.should include('+++ b/new_file.rb')
+    second_patch.should include('@@ -1,2 +1,3 @@')
     second_patch.should include(' line one')
     second_patch.should include(' line two')
     second_patch.should include('+line three')
+  end
+
+  it 'applies split patches for newly added files sequentially' do
+    first_patch, second_patch = emitted_patches_for(
+      PatchUtil::SpecHelpers::NEW_FILE_PATCH,
+      [['first lines', 'a1-a2'], ['last line', 'a3']]
+    )
+
+    Dir.mktmpdir do |dir|
+      run_git(dir, %w[init])
+
+      apply_patch_text!(dir, '0001-first-lines.patch', first_patch)
+      apply_patch_text!(dir, '0002-last-line.patch', second_patch)
+
+      File.read(File.join(dir, 'new_file.rb')).should == "line one\nline two\nline three\n"
+    end
   end
 
   it 'emits split patches for deleted files' do
@@ -93,13 +135,32 @@ RSpec.describe PatchUtil::Split::Projector do
     second_patch = emitter.emit(projector.project_chunk(1))
 
     first_patch.should include('--- a/old_file.rb')
-    first_patch.should include('+++ /dev/null')
-    first_patch.should include('@@ -1,3 +0,2 @@')
+    first_patch.should include('+++ b/old_file.rb')
+    first_patch.should include('@@ -1,3 +1,2 @@')
     first_patch.should include('-line one')
 
+    second_patch.should include('--- a/old_file.rb')
+    second_patch.should include('+++ /dev/null')
     second_patch.should include('@@ -1,2 +0,0 @@')
     second_patch.should include('-line two')
     second_patch.should include('-line three')
+  end
+
+  it 'applies split patches for deleted files sequentially' do
+    first_patch, second_patch = emitted_patches_for(
+      PatchUtil::SpecHelpers::DELETE_FILE_PATCH,
+      [['drop first line', 'a1'], ['drop rest', 'a2-a3']]
+    )
+
+    Dir.mktmpdir do |dir|
+      run_git(dir, %w[init])
+      File.write(File.join(dir, 'old_file.rb'), "line one\nline two\nline three\n")
+
+      apply_patch_text!(dir, '0001-drop-first-line.patch', first_patch)
+      apply_patch_text!(dir, '0002-drop-rest.patch', second_patch)
+
+      File.exist?(File.join(dir, 'old_file.rb')).should == false
+    end
   end
 
   it 'preserves new file mode metadata for text additions in mixed chunks' do

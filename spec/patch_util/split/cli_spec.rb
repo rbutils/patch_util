@@ -287,7 +287,9 @@ RSpec.describe PatchUtil::CLI do
       second_patch = File.read(File.join(output_dir, '0002-last-line.patch'))
 
       first_patch.should include('@@ -0,0 +1,2 @@')
-      second_patch.should include('@@ -0,2 +1,3 @@')
+      second_patch.should include('@@ -1,2 +1,3 @@')
+      second_patch.should include('--- a/new_file.rb')
+      second_patch.should include('+++ b/new_file.rb')
     end
   end
 
